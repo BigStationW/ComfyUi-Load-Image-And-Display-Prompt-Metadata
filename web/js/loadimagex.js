@@ -91,6 +91,26 @@ function extractPromptsFromWorkflow(workflow) {
                 }
             }
         }
+
+        // Check KSamplerWithNAG nodes
+        if (!positiveNodeId && !negativeNodeId) {
+            for (const nodeId in workflow) {
+                const node = workflow[nodeId];
+                
+                if (node.class_type === "KSamplerWithNAG" && node.inputs) {
+                    if (node.inputs.positive && Array.isArray(node.inputs.positive)) {
+                        positiveNodeId = String(node.inputs.positive[0]);
+                    }
+                    if (node.inputs.negative && Array.isArray(node.inputs.negative)) {
+                        negativeNodeId = String(node.inputs.negative[0]);
+                    }
+                    // Also check for nag_negative
+                    if (node.inputs.nag_negative && Array.isArray(node.inputs.nag_negative)) {
+                        negativeNodeId = String(node.inputs.nag_negative[0]);
+                    }
+                }
+            }
+        }
         
         // Check for AdaptiveGuidance nodes
         if (!positiveNodeId && !negativeNodeId) {
@@ -149,38 +169,129 @@ function extractPromptsFromWorkflow(workflow) {
             }
         }
         
-        // Now extract the actual prompt texts
-        for (const nodeId in workflow) {
-            const node = workflow[nodeId];
+        // Helper function to extract text from a node, following concatenations
+        function extractTextFromNode(nodeId, visited = new Set()) {
+            if (!nodeId || visited.has(nodeId)) return "";
+            visited.add(nodeId);
             
-            if (node.class_type === "CLIPTextEncode" && node.inputs && node.inputs.text) {
-                const text = node.inputs.text;
+            const node = workflow[String(nodeId)];
+            if (!node) return "";
+            
+            // Handle ImpactConcatConditionings node
+            if (node.class_type === "ImpactConcatConditionings" && node.inputs) {
+                let concatenatedText = [];
                 
-                if (positiveNodeId && String(nodeId) === positiveNodeId) {
-                    prompts.positive = text;
-                } else if (negativeNodeId && String(nodeId) === negativeNodeId) {
-                    prompts.negative = text;
-                } else {
-                    const title = node._meta?.title?.toLowerCase() || "";
-                    if (title.includes("negative") || title.includes("nag")) {
-                        if (!prompts.negative) prompts.negative = text;
-                    } else {
-                        if (!prompts.positive) prompts.positive = text;
+                // Check all conditioning inputs (conditioning1, conditioning2, etc.)
+                for (let i = 1; i <= 10; i++) {
+                    const condInput = node.inputs[`conditioning${i}`];
+                    if (condInput && Array.isArray(condInput)) {
+                        const text = extractTextFromNode(String(condInput[0]), visited);
+                        if (text) concatenatedText.push(text);
                     }
                 }
+                
+                return concatenatedText.join("\n\n");
+            }
+            
+            // Handle CLIPTextEncode nodes
+            else if (node.class_type === "CLIPTextEncode" && node.inputs && node.inputs.text) {
+                // Check if text is a reference to another node
+                if (Array.isArray(node.inputs.text)) {
+                    return extractTextFromNode(String(node.inputs.text[0]), visited);
+                }
+                // Otherwise it's the actual text
+                return node.inputs.text;
             }
             
             // Handle CLIPTextEncodeFlux nodes
             else if (node.class_type === "CLIPTextEncodeFlux" && node.inputs) {
                 const text = node.inputs.clip_l || node.inputs.t5xxl || "";
+                // Check if it's a reference
+                if (Array.isArray(text)) {
+                    return extractTextFromNode(String(text[0]), visited);
+                }
+                return text;
+            }
+            
+            // Handle StringConcatenate nodes
+            else if (node.class_type === "StringConcatenate" && node.inputs) {
+                let parts = [];
                 
-                if (positiveNodeId && String(nodeId) === positiveNodeId) {
-                    prompts.positive = text;
-                } else if (negativeNodeId && String(nodeId) === negativeNodeId) {
-                    prompts.negative = text;
+                // Get string_a
+                if (node.inputs.string_a) {
+                    if (Array.isArray(node.inputs.string_a)) {
+                        parts.push(extractTextFromNode(String(node.inputs.string_a[0]), visited));
+                    } else {
+                        parts.push(node.inputs.string_a);
+                    }
+                }
+                
+                // Get delimiter
+                const delimiter = node.inputs.delimiter || "";
+                
+                // Get string_b
+                if (node.inputs.string_b) {
+                    if (Array.isArray(node.inputs.string_b)) {
+                        parts.push(extractTextFromNode(String(node.inputs.string_b[0]), visited));
+                    } else {
+                        parts.push(node.inputs.string_b);
+                    }
+                }
+                
+                return parts.join(delimiter);
+            }
+            
+            // Handle String Literal nodes
+            else if (node.class_type === "String Literal" && node.inputs && node.inputs.string !== undefined) {
+                return node.inputs.string;
+            }
+            
+            return "";
+        }
+        
+        // Extract positive prompt
+        if (positiveNodeId) {
+            prompts.positive = extractTextFromNode(positiveNodeId);
+        }
+        
+        // Extract negative prompt
+        if (negativeNodeId) {
+            prompts.negative = extractTextFromNode(negativeNodeId);
+        }
+        
+        // Fallback: if we didn't find prompts through connections, check by node titles
+        if (!prompts.positive || !prompts.negative) {
+            for (const nodeId in workflow) {
+                const node = workflow[nodeId];
+                
+                if (node.class_type === "CLIPTextEncode" && node.inputs && node.inputs.text) {
+                    const title = node._meta?.title?.toLowerCase() || "";
+                    
+                    if (title.includes("negative") || title.includes("nag")) {
+                        if (!prompts.negative) prompts.negative = node.inputs.text;
+                    } else {
+                        if (!prompts.positive && nodeId !== positiveNodeId && nodeId !== negativeNodeId) {
+                            prompts.positive = node.inputs.text;
+                        }
+                    }
+                }
+                
+                // Handle CLIPTextEncodeFlux nodes in fallback
+                else if (node.class_type === "CLIPTextEncodeFlux" && node.inputs) {
+                    const text = node.inputs.clip_l || node.inputs.t5xxl || "";
+                    const title = node._meta?.title?.toLowerCase() || "";
+                    
+                    if (title.includes("negative") || title.includes("nag")) {
+                        if (!prompts.negative) prompts.negative = text;
+                    } else {
+                        if (!prompts.positive && nodeId !== positiveNodeId && nodeId !== negativeNodeId) {
+                            prompts.positive = text;
+                        }
+                    }
                 }
             }
         }
+        
     } catch (error) {
         logError("[LoadImageX] Error extracting prompts from workflow:", error);
     }
