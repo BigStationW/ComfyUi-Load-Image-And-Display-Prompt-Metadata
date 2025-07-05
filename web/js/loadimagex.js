@@ -2,11 +2,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 // Configuration option to enable/disable logging
-const ENABLE_LOGGING = false; // Set to true to enable all console logs
-
-// CONDITIONING or STRING, making our prompt detection future-proof.
-const textEncodingNodeTypes = new Set();
-let nodeTypesInitialized = false; // Flag to ensure we only initialize once
+const ENABLE_LOGGING = true; // Set to true to enable all console logs
 
 // Helper function for conditional logging
 function log(message, style = "") {
@@ -171,9 +167,16 @@ function extractPromptsFromWorkflow(workflow) {
             }
         }
 
-        // Helper function to dynamically check if a node is part of the text/prompt chain.
+        // Helper function to check if a node is a text encoding node
         function isTextEncodingNode(node) {
-            return textEncodingNodeTypes.has(node.class_type);
+            const textEncodingTypes = [
+                'CLIPTextEncode',
+                'CLIPTextEncodeFlux',
+                'StringConcatenate',
+                'String Literal',
+                'ImpactConcatConditionings'
+            ];
+            return textEncodingTypes.includes(node.class_type);
         }
 
         // Helper function to extract text from a node, following concatenations
@@ -224,6 +227,7 @@ function extractPromptsFromWorkflow(workflow) {
             else if (node.class_type === "StringConcatenate" && node.inputs) {
                 let parts = [];
                 
+                // Get string_a
                 if (node.inputs.string_a) {
                     if (Array.isArray(node.inputs.string_a)) {
                         parts.push(extractTextFromNode(String(node.inputs.string_a[0]), visited));
@@ -232,8 +236,10 @@ function extractPromptsFromWorkflow(workflow) {
                     }
                 }
                 
+                // Get delimiter
                 const delimiter = node.inputs.delimiter || "";
                 
+                // Get string_b
                 if (node.inputs.string_b) {
                     if (Array.isArray(node.inputs.string_b)) {
                         parts.push(extractTextFromNode(String(node.inputs.string_b[0]), visited));
@@ -317,6 +323,7 @@ async function updatePromptsFromImage(filename, node) {
         const buffer = await res.arrayBuffer();
         const metadata = parsePNGMetadata(buffer);
         
+        // Log metadata in blue
         log("%c[LoadImageX] Metadata:", "color: #0066ff; font-weight: bold");
         log("%c" + JSON.stringify(metadata, null, 2), "color: #0066ff");
         
@@ -324,11 +331,13 @@ async function updatePromptsFromImage(filename, node) {
             const promptData = JSON.parse(cleanJSONString(metadata.prompt));
             const prompts = extractPromptsFromWorkflow(promptData);
 
+            // Log positive prompt in green
             if (prompts.positive) {
                 log("%c[LoadImageX] Positive Prompt:", "color: #00cc00; font-weight: bold");
                 log("%c" + prompts.positive, "color: #00cc00");
             }
             
+            // Log negative prompt in red
             if (prompts.negative) {
                 log("%c[LoadImageX] Negative Prompt:", "color: #ff0000; font-weight: bold");
                 log("%c" + prompts.negative, "color: #ff0000");
@@ -345,21 +354,6 @@ async function updatePromptsFromImage(filename, node) {
 app.registerExtension({
     name: "testt.LoadImageX",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        // This runs once to build a set of all node types that can be part of a prompt.
-        if (!nodeTypesInitialized) {
-            nodeTypesInitialized = true;
-            log("[LoadImageX] Initializing dynamic node type detection...");
-
-            const relevantOutputTypes = ['CONDITIONING', 'STRING'];
-
-            for (const nodeDef of Object.values(app.node_defs)) {
-                if (nodeDef.output && nodeDef.output.some(type => relevantOutputTypes.includes(type))) {
-                    textEncodingNodeTypes.add(nodeDef.name);
-                }
-            }
-            log(`[LoadImageX] Detected ${textEncodingNodeTypes.size} text/conditioning related node types.`);
-        }
-
         if (nodeData.name === "LoadImageX") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
 
@@ -379,6 +373,7 @@ app.registerExtension({
                         // Update prompts from metadata
                         updatePromptsFromImage(value, self);
                         
+                        // Trigger the node to update its outputs
                         // This is important for the preview to update
                         if (self.graph) {
                             self.graph.runStep();
@@ -393,6 +388,7 @@ app.registerExtension({
 
                 // If there's already a default image value, load its metadata
                 if (imageWidget.value) {
+                    // Use setTimeout to ensure the node is fully initialized
                     setTimeout(() => {
                         updatePromptsFromImage(imageWidget.value, self);
                     }, 100);
@@ -425,7 +421,9 @@ app.registerExtension({
                                 });
                                 if (response.ok) {
                                     const data = await response.json();
+                                    // Update the widget value
                                     imageWidget.value = data.name;
+                                    // Trigger the callback to update prompts and preview
                                     if (imageWidget.callback) {
                                         imageWidget.callback(data.name);
                                     }
