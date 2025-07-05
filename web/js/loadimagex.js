@@ -2,7 +2,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 // Configuration option to enable/disable logging
-const ENABLE_LOGGING = false; // Set to true to enable all console logs
+const ENABLE_LOGGING = true; // Set to true to enable all console logs
 
 // Helper function for conditional logging
 function log(message, style = "") {
@@ -68,107 +68,117 @@ function parsePNGMetadata(arrayBuffer) {
     return metadata;
 }
 
-// Helper function to find positive/negative prompts in the workflow
+// More generalist function to find positive/negative prompts in the workflow
 function extractPromptsFromWorkflow(workflow) {
     const prompts = { positive: "", negative: "" };
     if (!workflow) return prompts;
-    
+
+    // Configuration for input patterns
+    const INPUT_PATTERNS = {
+        positive: ['positive', 'conditioning_positive', 'pos'],
+        negative: ['negative', 'conditioning_negative', 'nag_negative', 'neg']
+    };
+
     try {
-        // First, find nodes that connect to positive/negative inputs
-        let positiveNodeId = null;
-        let negativeNodeId = null;
+        // Step 1: Find all nodes that have positive/negative inputs
+        const candidateNodes = [];
         
-        // Check KSampler nodes first
         for (const nodeId in workflow) {
             const node = workflow[nodeId];
-            
-            if (node.class_type === "KSampler" && node.inputs) {
-                if (node.inputs.positive && Array.isArray(node.inputs.positive)) {
-                    positiveNodeId = String(node.inputs.positive[0]);
-                }
-                if (node.inputs.negative && Array.isArray(node.inputs.negative)) {
-                    negativeNodeId = String(node.inputs.negative[0]);
+            if (node.inputs) {
+                const hasPositive = INPUT_PATTERNS.positive.some(pattern => 
+                    node.inputs[pattern] && Array.isArray(node.inputs[pattern])
+                );
+                const hasNegative = INPUT_PATTERNS.negative.some(pattern => 
+                    node.inputs[pattern] && Array.isArray(node.inputs[pattern])
+                );
+                
+                if (hasPositive || hasNegative) {
+                    candidateNodes.push({
+                        nodeId,
+                        node,
+                        hasPositive,
+                        hasNegative,
+                        priority: (hasPositive ? 1 : 0) + (hasNegative ? 1 : 0)
+                    });
                 }
             }
         }
 
-        // Check KSamplerWithNAG nodes
-        if (!positiveNodeId && !negativeNodeId) {
-            for (const nodeId in workflow) {
-                const node = workflow[nodeId];
-                
-                if (node.class_type === "KSamplerWithNAG" && node.inputs) {
-                    if (node.inputs.positive && Array.isArray(node.inputs.positive)) {
-                        positiveNodeId = String(node.inputs.positive[0]);
-                    }
-                    if (node.inputs.negative && Array.isArray(node.inputs.negative)) {
-                        negativeNodeId = String(node.inputs.negative[0]);
-                    }
-                    // Also check for nag_negative
-                    if (node.inputs.nag_negative && Array.isArray(node.inputs.nag_negative)) {
-                        negativeNodeId = String(node.inputs.nag_negative[0]);
-                    }
-                }
-            }
-        }
-        
-        // Check for AdaptiveGuidance nodes
-        if (!positiveNodeId && !negativeNodeId) {
-            for (const nodeId in workflow) {
-                const node = workflow[nodeId];
-                
-                if (node.class_type === "AdaptiveGuidance" && node.inputs) {
-                    if (node.inputs.positive && Array.isArray(node.inputs.positive)) {
-                        positiveNodeId = String(node.inputs.positive[0]);
-                    }
-                    if (node.inputs.negative && Array.isArray(node.inputs.negative)) {
-                        negativeNodeId = String(node.inputs.negative[0]);
+        // Step 2: Sort by priority (nodes with both positive and negative first)
+        candidateNodes.sort((a, b) => b.priority - a.priority);
+
+        // Step 3: Extract prompts from the best candidates
+        let positiveNodeId = null;
+        let negativeNodeId = null;
+
+        for (const candidate of candidateNodes) {
+            const node = candidate.node;
+            
+            // Check for positive prompt connection
+            if (!positiveNodeId) {
+                for (const pattern of INPUT_PATTERNS.positive) {
+                    if (node.inputs[pattern] && Array.isArray(node.inputs[pattern])) {
+                        positiveNodeId = String(node.inputs[pattern][0]);
+                        break;
                     }
                 }
             }
+
+            // Check for negative prompt connection
+            if (!negativeNodeId) {
+                for (const pattern of INPUT_PATTERNS.negative) {
+                    if (node.inputs[pattern] && Array.isArray(node.inputs[pattern])) {
+                        negativeNodeId = String(node.inputs[pattern][0]);
+                        break;
+                    }
+                }
+            }
+
+            // If we found both, we can break
+            if (positiveNodeId && negativeNodeId) break;
         }
-        
-        // If no KSampler or AdaptiveGuidance, check for CFGGuider
-        if (!positiveNodeId && !negativeNodeId) {
+
+        // Step 4: If still no connections found, look for any input that might be conditioning
+        if (!positiveNodeId || !negativeNodeId) {
             for (const nodeId in workflow) {
                 const node = workflow[nodeId];
-                
-                if (node.class_type === "CFGGuider" && node.inputs) {
-                    if (node.inputs.positive && Array.isArray(node.inputs.positive)) {
-                        let posId = node.inputs.positive[0];
-                        const posNode = workflow[posId];
-                        if (posNode && posNode.class_type === "ChromaPaddingRemoval" && 
-                            posNode.inputs && posNode.inputs.conditioning) {
-                            positiveNodeId = String(posNode.inputs.conditioning[0]);
-                        } else {
-                            positiveNodeId = String(posId);
-                        }
-                    }
-                    
-                    if (node.inputs.negative && Array.isArray(node.inputs.negative)) {
-                        let negId = node.inputs.negative[0];
-                        const negNode = workflow[negId];
-                        if (negNode && negNode.class_type === "ChromaPaddingRemoval" && 
-                            negNode.inputs && negNode.inputs.conditioning) {
-                            negativeNodeId = String(negNode.inputs.conditioning[0]);
-                        } else {
-                            negativeNodeId = String(negId);
+                if (node.inputs) {
+                    // Look for any input that connects to text encoding nodes
+                    for (const inputKey in node.inputs) {
+                        const inputValue = node.inputs[inputKey];
+                        if (Array.isArray(inputValue) && inputValue.length > 0) {
+                            const connectedNode = workflow[String(inputValue[0])];
+                            if (connectedNode && isTextEncodingNode(connectedNode)) {
+                                // Use naming patterns to determine positive vs negative
+                                const isNegative = inputKey.toLowerCase().includes('negative') || 
+                                                 inputKey.toLowerCase().includes('nag') ||
+                                                 node._meta?.title?.toLowerCase().includes('negative');
+                                
+                                if (isNegative && !negativeNodeId) {
+                                    negativeNodeId = String(inputValue[0]);
+                                } else if (!isNegative && !positiveNodeId) {
+                                    positiveNodeId = String(inputValue[0]);
+                                }
+                            }
                         }
                     }
                 }
-                
-                // Also check for NAGCFGGuider
-                if (node.class_type === "NAGCFGGuider" && node.inputs) {
-                    if (node.inputs.positive && Array.isArray(node.inputs.positive)) {
-                        positiveNodeId = String(node.inputs.positive[0]);
-                    }
-                    if (node.inputs.nag_negative && Array.isArray(node.inputs.nag_negative)) {
-                        negativeNodeId = String(node.inputs.nag_negative[0]);
-                    }
-                }
             }
         }
-        
+
+        // Helper function to check if a node is a text encoding node
+        function isTextEncodingNode(node) {
+            const textEncodingTypes = [
+                'CLIPTextEncode',
+                'CLIPTextEncodeFlux',
+                'StringConcatenate',
+                'String Literal',
+                'ImpactConcatConditionings'
+            ];
+            return textEncodingTypes.includes(node.class_type);
+        }
+
         // Helper function to extract text from a node, following concatenations
         function extractTextFromNode(nodeId, visited = new Set()) {
             if (!nodeId || visited.has(nodeId)) return "";
@@ -248,18 +258,17 @@ function extractPromptsFromWorkflow(workflow) {
             
             return "";
         }
-        
-        // Extract positive prompt
+
+        // Extract prompts using the found node IDs
         if (positiveNodeId) {
             prompts.positive = extractTextFromNode(positiveNodeId);
         }
-        
-        // Extract negative prompt
+
         if (negativeNodeId) {
             prompts.negative = extractTextFromNode(negativeNodeId);
         }
-        
-        // Fallback: if we didn't find prompts through connections, check by node titles
+
+        // Fallback: if we still didn't find prompts, check by node titles and types
         if (!prompts.positive || !prompts.negative) {
             for (const nodeId in workflow) {
                 const node = workflow[nodeId];
@@ -295,6 +304,7 @@ function extractPromptsFromWorkflow(workflow) {
     } catch (error) {
         logError("[LoadImageX] Error extracting prompts from workflow:", error);
     }
+    
     return prompts;
 }
 
@@ -346,7 +356,7 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "LoadImageX") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
-            
+
             nodeType.prototype.onNodeCreated = function() {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
                 const self = this;
