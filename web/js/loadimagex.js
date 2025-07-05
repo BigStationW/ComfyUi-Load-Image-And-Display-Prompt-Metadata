@@ -2,7 +2,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 // Configuration option to enable/disable logging
-const ENABLE_LOGGING = true; // Set to true to enable all console logs
+const ENABLE_LOGGING = false; // Set to true to enable all console logs
 
 // CONDITIONING or STRING, making our prompt detection future-proof.
 const textEncodingNodeTypes = new Set();
