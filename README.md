@@ -1,5 +1,5 @@
 # ComfyUi-Load-Image-And-Display-Prompt-Metadata
-This node displays the positive and negative prompts of a loaded ComfyUi image.
+This node displays the positive and negative prompts of a ComfyUi image.
 
 <img src="https://github.com/user-attachments/assets/ccd18d75-16df-4f69-9644-9822bc807535" width="500" />
 
