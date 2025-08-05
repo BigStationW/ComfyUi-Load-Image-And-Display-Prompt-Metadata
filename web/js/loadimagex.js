@@ -174,7 +174,9 @@ function extractPromptsFromWorkflow(workflow) {
                 'CLIPTextEncodeFlux',
                 'StringConcatenate',
                 'String Literal',
-                'ImpactConcatConditionings'
+                'ImpactConcatConditionings',
+                'PCLazyTextEncode',
+                'ImpactWildcardProcessor'
             ];
             return textEncodingTypes.includes(node.class_type);
         }
@@ -187,8 +189,31 @@ function extractPromptsFromWorkflow(workflow) {
             const node = workflow[String(nodeId)];
             if (!node) return "";
             
+            // Handle ImpactWildcardProcessor node
+            if (node.class_type === "ImpactWildcardProcessor" && node.inputs) {
+                // Use populated_text if available, otherwise use wildcard_text
+                return node.inputs.populated_text || node.inputs.wildcard_text || "";
+            }
+            
+            // Handle PCLazyTextEncode node
+            else if (node.class_type === "PCLazyTextEncode" && node.inputs && node.inputs.text) {
+                // Check if text is a reference to another node
+                if (Array.isArray(node.inputs.text)) {
+                    return extractTextFromNode(String(node.inputs.text[0]), visited);
+                }
+                // Otherwise it's the actual text
+                return node.inputs.text;
+            }
+            
+            // Handle ChromaPaddingRemoval - pass through to its input
+            else if (node.class_type === "ChromaPaddingRemoval" && node.inputs && node.inputs.conditioning) {
+                if (Array.isArray(node.inputs.conditioning)) {
+                    return extractTextFromNode(String(node.inputs.conditioning[0]), visited);
+                }
+            }
+            
             // Handle ImpactConcatConditionings node
-            if (node.class_type === "ImpactConcatConditionings" && node.inputs) {
+            else if (node.class_type === "ImpactConcatConditionings" && node.inputs) {
                 let concatenatedText = [];
                 
                 // Check all conditioning inputs (conditioning1, conditioning2, etc.)
