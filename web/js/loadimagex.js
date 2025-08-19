@@ -176,7 +176,8 @@ function extractPromptsFromWorkflow(workflow) {
                 'String Literal',
                 'ImpactConcatConditionings',
                 'PCLazyTextEncode',
-                'ImpactWildcardProcessor'
+                'ImpactWildcardProcessor',
+                'TextEncodeQwenImageEdit'
             ];
             return textEncodingTypes.includes(node.class_type);
         }
@@ -279,6 +280,16 @@ function extractPromptsFromWorkflow(workflow) {
             // Handle String Literal nodes
             else if (node.class_type === "String Literal" && node.inputs && node.inputs.string !== undefined) {
                 return node.inputs.string;
+            }
+
+            // Handle TextEncodeQwenImageEdit nodes
+            else if (node.class_type === "TextEncodeQwenImageEdit" && node.inputs && node.inputs.prompt) {
+                // Check if prompt is a reference to another node
+                if (Array.isArray(node.inputs.prompt)) {
+                    return extractTextFromNode(String(node.inputs.prompt[0]), visited);
+                }
+                // Otherwise it's the actual text
+                return node.inputs.prompt;
             }
             
             return "";
