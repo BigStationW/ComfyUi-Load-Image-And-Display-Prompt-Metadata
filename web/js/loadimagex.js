@@ -481,3 +481,99 @@ app.registerExtension({
         }
     }
 });
+
+// NEW: OnlyLoadImagesWithMetadata extension
+app.registerExtension({
+    name: "testt.OnlyLoadImagesWithMetadata",
+    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        if (nodeData.name === "OnlyLoadImagesWithMetadata") {
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+
+            nodeType.prototype.onNodeCreated = function() {
+                const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
+                const self = this;
+                
+                const imageWidget = this.widgets.find(w => w.name === "image");
+                if (!imageWidget) return r;
+
+                // Store the original callback
+                const originalCallback = imageWidget.callback;
+                
+                // Override the callback to handle both value change and preview update
+                imageWidget.callback = function(value) {
+                    if (value) {
+                        // Update prompts from metadata
+                        updatePromptsFromImage(value, self);
+                        
+                        // Trigger the node to update its outputs
+                        // This is important for the preview to update
+                        if (self.graph) {
+                            self.graph.runStep();
+                        }
+                    }
+                    
+                    // Call original callback if it exists
+                    if (originalCallback) {
+                        return originalCallback.apply(this, arguments);
+                    }
+                };
+
+                // If there's already a default image value, load its metadata
+                if (imageWidget.value) {
+                    // Use setTimeout to ensure the node is fully initialized
+                    setTimeout(() => {
+                        updatePromptsFromImage(imageWidget.value, self);
+                    }, 100);
+                }
+
+                // Handle the upload button
+                const uploadWidget = this.widgets.find(w => w.type === "button");
+                if (uploadWidget) {
+                    uploadWidget.callback = () => {
+                        const fileInput = document.createElement("input");
+                        fileInput.type = "file";
+                        fileInput.accept = ".png";
+                        fileInput.style.display = "none";
+                        document.body.appendChild(fileInput);
+
+                        fileInput.onchange = async (e) => {
+                            if (!e.target.files.length) {
+                                document.body.removeChild(fileInput);
+                                return;
+                            }
+                            const file = e.target.files[0];
+                            const formData = new FormData();
+                            formData.append("image", file);
+                            formData.append("overwrite", "true");
+                            
+                            try {
+                                const response = await api.fetchApi("/upload/image", { 
+                                    method: "POST", 
+                                    body: formData 
+                                });
+                                if (response.ok) {
+                                    const data = await response.json();
+                                    // Update the widget value
+                                    imageWidget.value = data.name;
+                                    // Trigger the callback to update prompts and preview
+                                    if (imageWidget.callback) {
+                                        imageWidget.callback(data.name);
+                                    }
+                                } else {
+                                    logError("[OnlyLoadImagesWithMetadata] Upload failed:", response.statusText);
+                                }
+                            } catch (error) {
+                                logError("[OnlyLoadImagesWithMetadata] Upload error:", error);
+                            } finally {
+                                document.body.removeChild(fileInput);
+                            }
+                        };
+                        fileInput.click();
+                    };
+                }
+                
+                return r;
+            };
+        }
+    }
+});
