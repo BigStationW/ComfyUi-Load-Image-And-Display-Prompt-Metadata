@@ -324,4 +324,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OnlyLoadImagesWithMetadata": "Only Load Images With Metadata"
 }
 
-WEB_DIRECTORY = "./web
+WEB_DIRECTORY = "./web"
+
