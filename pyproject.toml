@@ -28,7 +28,7 @@ Documentation = "https://github.com/BigStationW/ComfyUi-Load-Image-And-Display-P
 "Bug Tracker" = "https://github.com/BigStationW/ComfyUi-Load-Image-And-Display-Prompt-Metadata/issues"
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "bigstationw"
 DisplayName = "ComfyUi-Load-Image-And-Display-Prompt-Metadata"
 Icon = ""
 includes = [] 
