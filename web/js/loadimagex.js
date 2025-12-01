@@ -75,7 +75,7 @@ function extractPromptsFromWorkflow(workflow) {
 
     const INPUT_PATTERNS = {
         positive: ['positive', 'conditioning_positive', 'pos'],
-        negative: ['negative', 'conditioning_negative', 'nag_negative', 'neg']
+        negative: ['nag_negative', 'negative', 'conditioning_negative', 'neg']
     };
 
     try {
@@ -136,6 +136,10 @@ function extractPromptsFromWorkflow(workflow) {
             const node = workflow[String(nodeId)];
             if (!node) return "";
 
+            if (node.class_type === "ConditioningZeroOut") {
+                return "";
+            }
+
             // --- TRAVERSAL: Look through Conditioning Nodes ---
             if (node.class_type === "ConditioningCombine") {
                 const t1 = node.inputs.conditioning_1 ? extractTextFromNode(String(node.inputs.conditioning_1[0]), visited) : "";
@@ -144,9 +148,9 @@ function extractPromptsFromWorkflow(workflow) {
                 return [t1, t2].filter(t => t).join("\n");
             }
 
-            // Conditioning Passthroughs (Timesteps, ZeroOut, ChromaPaddingRemoval, etc.)
+            // Conditioning Passthroughs (Timesteps, ChromaPaddingRemoval, etc.)
             const condPassthroughTypes = [
-                "ConditioningSetTimestepRange", "ConditioningZeroOut", 
+                "ConditioningSetTimestepRange", 
                 "ConditioningAverage", "ConditioningSetArea", "ConditioningSetMask",
                 "ChromaPaddingRemoval" 
             ];
