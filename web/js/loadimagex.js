@@ -144,10 +144,11 @@ function extractPromptsFromWorkflow(workflow) {
                 return [t1, t2].filter(t => t).join("\n");
             }
 
-            // Conditioning Passthroughs (Timesteps, ZeroOut, etc.)
+            // Conditioning Passthroughs (Timesteps, ZeroOut, ChromaPaddingRemoval, etc.)
             const condPassthroughTypes = [
                 "ConditioningSetTimestepRange", "ConditioningZeroOut", 
-                "ConditioningAverage", "ConditioningSetArea", "ConditioningSetMask"
+                "ConditioningAverage", "ConditioningSetArea", "ConditioningSetMask",
+                "ChromaPaddingRemoval" 
             ];
             if (condPassthroughTypes.includes(node.class_type)) {
                 if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
@@ -185,8 +186,8 @@ function extractPromptsFromWorkflow(workflow) {
                 return textVal || "";
             }
 
-            // 3. CLIPTextEncode (Standard & Flux)
-            else if ((node.class_type === "CLIPTextEncode" || node.class_type === "CLIPTextEncodeFlux") && node.inputs) {
+            // 3. CLIPTextEncode (Standard, Flux, & PCLazyTextEncode)
+            else if ((node.class_type === "CLIPTextEncode" || node.class_type === "CLIPTextEncodeFlux" || node.class_type === "PCLazyTextEncode") && node.inputs) {
                 const textKeys = ['text', 'clip_l', 't5xxl'];
                 for (const key of textKeys) {
                     if (node.inputs[key] !== undefined) {
@@ -236,11 +237,21 @@ function extractPromptsFromWorkflow(workflow) {
                 return concatenatedText.join("\n\n");
             }
 
-            // 8. General Fallback for unknown nodes: Try following inputs named 'text' or 'conditioning'
+            // 8. General Fallback for unknown nodes
             else {
                 if (node.inputs) {
-                     if (node.inputs.text && Array.isArray(node.inputs.text)) return extractTextFromNode(String(node.inputs.text[0]), visited);
-                     if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) return extractTextFromNode(String(node.inputs.conditioning[0]), visited);
+                     // Check for 'text' input - handle both link (Array) and value (String)
+                     if (node.inputs.text) {
+                         if (Array.isArray(node.inputs.text)) {
+                             return extractTextFromNode(String(node.inputs.text[0]), visited);
+                         } else if (typeof node.inputs.text === 'string') {
+                             return node.inputs.text;
+                         }
+                     }
+                     // Check for conditioning input
+                     if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
+                         return extractTextFromNode(String(node.inputs.conditioning[0]), visited);
+                     }
                 }
                 return "";
             }
