@@ -2,7 +2,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 // Configuration option to enable/disable logging
-const ENABLE_LOGGING = false; // Set to true to enable all console logs
+const ENABLE_LOGGING = true; // Set to true to enable all console logs
 
 // Helper function for conditional logging
 function log(message, style = "") {
@@ -73,13 +73,36 @@ function extractPromptsFromWorkflow(workflow) {
     const prompts = { positive: "", negative: "" };
     if (!workflow) return prompts;
 
+    // 1. PRIORITY STRATEGY: Look for nodes explicitly named "Positive Prompt" or "Negative Prompt"
+    // This is the most reliable method for templates and organized workflows.
+    for (const nodeId in workflow) {
+        const node = workflow[nodeId];
+        const title = node._meta?.title?.toLowerCase() || "";
+        
+        if (title === "positive prompt" || title === "pos prompt" || title === "prompt") {
+            // Only overwrite if we haven't found a text yet or if this seems more "direct"
+            const text = extractTextFromNode(nodeId, new Set(), workflow);
+            if (text) prompts.positive = text;
+        }
+        
+        if (title === "negative prompt" || title === "neg prompt") {
+            const text = extractTextFromNode(nodeId, new Set(), workflow);
+            if (text) prompts.negative = text;
+        }
+    }
+
+    // If we found both via titles, we are done.
+    if (prompts.positive && prompts.negative) return prompts;
+
+    // 2. GRAPH TRAVERSAL STRATEGY: Follow the connections from Samplers
     const INPUT_PATTERNS = {
-        positive: ['positive', 'conditioning_positive', 'pos'],
+        // Added 'guider' for SamplerCustomAdvanced/Flux workflows
+        positive: ['positive', 'conditioning_positive', 'pos', 'guider'], 
         negative: ['nag_negative', 'negative', 'conditioning_negative', 'neg']
     };
 
     try {
-        // Step 1: Find candidate nodes (nodes with positive/negative inputs)
+        // Find candidate nodes (nodes with positive/negative/guider inputs)
         const candidateNodes = [];
         for (const nodeId in workflow) {
             const node = workflow[nodeId];
@@ -103,13 +126,12 @@ function extractPromptsFromWorkflow(workflow) {
         }
         candidateNodes.sort((a, b) => b.priority - a.priority);
 
-        // Step 2: Determine which nodes connect to positive/negative
         let positiveNodeId = null;
         let negativeNodeId = null;
 
         for (const candidate of candidateNodes) {
             const node = workflow[candidate.nodeId];
-            if (!positiveNodeId) {
+            if (!positiveNodeId && !prompts.positive) {
                 for (const pattern of INPUT_PATTERNS.positive) {
                     if (node.inputs[pattern] && Array.isArray(node.inputs[pattern])) {
                         positiveNodeId = String(node.inputs[pattern][0]);
@@ -117,7 +139,7 @@ function extractPromptsFromWorkflow(workflow) {
                     }
                 }
             }
-            if (!negativeNodeId) {
+            if (!negativeNodeId && !prompts.negative) {
                 for (const pattern of INPUT_PATTERNS.negative) {
                     if (node.inputs[pattern] && Array.isArray(node.inputs[pattern])) {
                         negativeNodeId = String(node.inputs[pattern][0]);
@@ -125,151 +147,18 @@ function extractPromptsFromWorkflow(workflow) {
                     }
                 }
             }
-            if (positiveNodeId && negativeNodeId) break;
+            if ((positiveNodeId || prompts.positive) && (negativeNodeId || prompts.negative)) break;
         }
 
-        // --- Recursive Helper to Extract Text ---
-        function extractTextFromNode(nodeId, visited = new Set()) {
-            if (!nodeId || visited.has(nodeId)) return "";
-            visited.add(nodeId);
-            
-            const node = workflow[String(nodeId)];
-            if (!node) return "";
+        // Extract using the IDs found via graph traversal (if not already found by title)
+        if (positiveNodeId && !prompts.positive) prompts.positive = extractTextFromNode(positiveNodeId, new Set(), workflow);
+        if (negativeNodeId && !prompts.negative) prompts.negative = extractTextFromNode(negativeNodeId, new Set(), workflow);
 
-            if (node.class_type === "ConditioningZeroOut") {
-                return "";
-            }
-
-            // --- TRAVERSAL: Look through Conditioning Nodes ---
-            if (node.class_type === "ConditioningCombine") {
-                const t1 = node.inputs.conditioning_1 ? extractTextFromNode(String(node.inputs.conditioning_1[0]), visited) : "";
-                const t2 = node.inputs.conditioning_2 ? extractTextFromNode(String(node.inputs.conditioning_2[0]), visited) : "";
-                // Join valid strings with a newline
-                return [t1, t2].filter(t => t).join("\n");
-            }
-
-            // Conditioning Passthroughs (Timesteps, ChromaPaddingRemoval, etc.)
-            const condPassthroughTypes = [
-                "ConditioningSetTimestepRange", 
-                "ConditioningAverage", "ConditioningSetArea", "ConditioningSetMask",
-                "ChromaPaddingRemoval" 
-            ];
-            if (condPassthroughTypes.includes(node.class_type)) {
-                if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
-                    return extractTextFromNode(String(node.inputs.conditioning[0]), visited);
-                }
-                if (node.inputs.conditioning_to && Array.isArray(node.inputs.conditioning_to)) {
-                    return extractTextFromNode(String(node.inputs.conditioning_to[0]), visited);
-                }
-                return "";
-            }
-
-            // --- TEXT EXTRACTION ---
-
-            // 1. Text Concatenate (WAS Node Suite)
-            if (node.class_type === "Text Concatenate" && node.inputs) {
-                let parts = [];
-                const delimiter = node.inputs.delimiter || "";
-                ['text_a', 'text_b', 'text_c', 'text_d'].forEach(key => {
-                    if (node.inputs[key]) {
-                        if (Array.isArray(node.inputs[key])) {
-                            const val = extractTextFromNode(String(node.inputs[key][0]), visited);
-                            if(val) parts.push(val);
-                        } else {
-                            parts.push(node.inputs[key]);
-                        }
-                    }
-                });
-                return parts.join(delimiter);
-            }
-
-            // 2. Text Multiline (WAS Node Suite)
-            else if (node.class_type === "Text Multiline" && node.inputs) {
-                const textVal = node.inputs.text;
-                if (Array.isArray(textVal)) return extractTextFromNode(String(textVal[0]), visited);
-                return textVal || "";
-            }
-
-            // 3. CLIPTextEncode (Standard, Flux, & PCLazyTextEncode)
-            else if ((node.class_type === "CLIPTextEncode" || node.class_type === "CLIPTextEncodeFlux" || node.class_type === "PCLazyTextEncode") && node.inputs) {
-                const textKeys = ['text', 'clip_l', 't5xxl'];
-                for (const key of textKeys) {
-                    if (node.inputs[key] !== undefined) {
-                        if (Array.isArray(node.inputs[key])) {
-                            return extractTextFromNode(String(node.inputs[key][0]), visited);
-                        }
-                        return node.inputs[key] || "";
-                    }
-                }
-                return "";
-            }
-
-            // 4. StringConcatenate (ComfyUI-Custom-Scripts)
-            else if (node.class_type === "StringConcatenate" && node.inputs) {
-                 let parts = [];
-                 if (node.inputs.string_a) {
-                     if(Array.isArray(node.inputs.string_a)) parts.push(extractTextFromNode(String(node.inputs.string_a[0]), visited));
-                     else parts.push(node.inputs.string_a);
-                 }
-                 if (node.inputs.string_b) {
-                     if(Array.isArray(node.inputs.string_b)) parts.push(extractTextFromNode(String(node.inputs.string_b[0]), visited));
-                     else parts.push(node.inputs.string_b);
-                 }
-                 return parts.join(node.inputs.delimiter || "");
-            }
-
-            // 5. String Literal
-            else if (node.class_type === "String Literal" && node.inputs) {
-                return node.inputs.string || "";
-            }
-            
-            // 6. ImpactWildcardProcessor
-            else if (node.class_type === "ImpactWildcardProcessor" && node.inputs) {
-                return node.inputs.populated_text || node.inputs.wildcard_text || "";
-            }
-            
-            // 7. ImpactConcatConditionings
-            else if (node.class_type === "ImpactConcatConditionings" && node.inputs) {
-                let concatenatedText = [];
-                for (let i = 1; i <= 10; i++) {
-                    const condInput = node.inputs[`conditioning${i}`];
-                    if (condInput && Array.isArray(condInput)) {
-                        const text = extractTextFromNode(String(condInput[0]), visited);
-                        if (text) concatenatedText.push(text);
-                    }
-                }
-                return concatenatedText.join("\n\n");
-            }
-
-            // 8. General Fallback for unknown nodes
-            else {
-                if (node.inputs) {
-                     // Check for 'text' input - handle both link (Array) and value (String)
-                     if (node.inputs.text) {
-                         if (Array.isArray(node.inputs.text)) {
-                             return extractTextFromNode(String(node.inputs.text[0]), visited);
-                         } else if (typeof node.inputs.text === 'string') {
-                             return node.inputs.text;
-                         }
-                     }
-                     // Check for conditioning input
-                     if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
-                         return extractTextFromNode(String(node.inputs.conditioning[0]), visited);
-                     }
-                }
-                return "";
-            }
-        }
-
-        // Step 3: Extract the text using the ID found
-        if (positiveNodeId) prompts.positive = extractTextFromNode(positiveNodeId);
-        if (negativeNodeId) prompts.negative = extractTextFromNode(negativeNodeId);
-
-        // Step 4: Final Fallback - Scan for unconnected text nodes
+        // 3. FALLBACK STRATEGY: Scan for unconnected CLIPTextEncode nodes
         if (!prompts.positive || !prompts.negative) {
             for (const nodeId in workflow) {
                 const node = workflow[nodeId];
-                if (node.class_type === "CLIPTextEncode" && node.inputs && node.inputs.text && !Array.isArray(node.inputs.text)) {
+                if ((node.class_type === "CLIPTextEncode" || node.class_type === "CLIPTextEncodeFlux") && node.inputs && typeof node.inputs.text === 'string') {
                     const title = node._meta?.title?.toLowerCase() || "";
                     if (title.includes("negative") || title.includes("nag")) {
                         if (!prompts.negative) prompts.negative = node.inputs.text;
@@ -287,6 +176,141 @@ function extractPromptsFromWorkflow(workflow) {
     }
     
     return prompts;
+}
+
+// Helper function extracted outside to be clean and recursive
+function extractTextFromNode(nodeId, visited = new Set(), workflow) {
+    if (!nodeId || visited.has(nodeId)) return "";
+    visited.add(nodeId);
+    
+    const node = workflow[String(nodeId)];
+    if (!node) return "";
+
+    // --- TRAVERSAL NODES ---
+
+    // 1. BasicGuider (Flux/SD3)
+    // Pass through to the 'conditioning' input
+    if (node.class_type === "BasicGuider") {
+        if (node.inputs && node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
+            return extractTextFromNode(String(node.inputs.conditioning[0]), visited, workflow);
+        }
+    }
+
+    // 2. ConditioningCombine
+    if (node.class_type === "ConditioningCombine") {
+        const t1 = node.inputs.conditioning_1 ? extractTextFromNode(String(node.inputs.conditioning_1[0]), visited, workflow) : "";
+        const t2 = node.inputs.conditioning_2 ? extractTextFromNode(String(node.inputs.conditioning_2[0]), visited, workflow) : "";
+        return [t1, t2].filter(t => t).join("\n");
+    }
+
+    // 3. Conditioning Passthroughs
+    const condPassthroughTypes = [
+        "ConditioningSetTimestepRange", "ConditioningAverage", "ConditioningSetArea", 
+        "ConditioningSetMask", "ChromaPaddingRemoval", "ConditioningZeroOut"
+    ];
+    if (condPassthroughTypes.includes(node.class_type)) {
+        if (node.class_type === "ConditioningZeroOut") return ""; // Stop at ZeroOut usually
+        
+        if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
+            return extractTextFromNode(String(node.inputs.conditioning[0]), visited, workflow);
+        }
+        if (node.inputs.conditioning_to && Array.isArray(node.inputs.conditioning_to)) {
+            return extractTextFromNode(String(node.inputs.conditioning_to[0]), visited, workflow);
+        }
+    }
+
+    // --- TEXT EXTRACTION NODES ---
+
+    // 4. Text Concatenate (WAS Node Suite & Others)
+    if ((node.class_type === "Text Concatenate" || node.class_type === "StringConcatenate") && node.inputs) {
+        let parts = [];
+        const delimiter = node.inputs.delimiter || "";
+        
+        // WAS Suite style
+        ['text_a', 'text_b', 'text_c', 'text_d'].forEach(key => {
+            if (node.inputs[key]) {
+                if (Array.isArray(node.inputs[key])) {
+                    const val = extractTextFromNode(String(node.inputs[key][0]), visited, workflow);
+                    if(val) parts.push(val);
+                } else {
+                    parts.push(node.inputs[key]);
+                }
+            }
+        });
+
+        // Custom Scripts style
+        if (parts.length === 0) {
+             if (node.inputs.string_a) {
+                 if(Array.isArray(node.inputs.string_a)) parts.push(extractTextFromNode(String(node.inputs.string_a[0]), visited, workflow));
+                 else parts.push(node.inputs.string_a);
+             }
+             if (node.inputs.string_b) {
+                 if(Array.isArray(node.inputs.string_b)) parts.push(extractTextFromNode(String(node.inputs.string_b[0]), visited, workflow));
+                 else parts.push(node.inputs.string_b);
+             }
+        }
+        
+        return parts.join(delimiter);
+    }
+
+    // 5. Text Multiline (WAS Node Suite)
+    if (node.class_type === "Text Multiline" && node.inputs) {
+        const textVal = node.inputs.text;
+        if (Array.isArray(textVal)) return extractTextFromNode(String(textVal[0]), visited, workflow);
+        return textVal || "";
+    }
+
+    // 6. CLIPTextEncode (Standard, Flux, PCLazy)
+    // Added PCLazyTextEncodeAdvanced support specifically
+    if ((node.class_type === "CLIPTextEncode" || node.class_type === "CLIPTextEncodeFlux" || 
+         node.class_type === "PCLazyTextEncode" || node.class_type === "PCLazyTextEncodeAdvanced") && node.inputs) {
+        const textKeys = ['text', 'clip_l', 't5xxl'];
+        for (const key of textKeys) {
+            if (node.inputs[key] !== undefined) {
+                if (Array.isArray(node.inputs[key])) {
+                    return extractTextFromNode(String(node.inputs[key][0]), visited, workflow);
+                }
+                const value = node.inputs[key] || "";
+                if (value) return value;
+            }
+        }
+    }
+
+    // 7. ImpactWildcardProcessor
+    if (node.class_type === "ImpactWildcardProcessor" && node.inputs) {
+        return node.inputs.populated_text || node.inputs.wildcard_text || "";
+    }
+
+    // 8. String Literal
+    if (node.class_type === "String Literal" && node.inputs) {
+        return node.inputs.string || "";
+    }
+
+    // 9. Primitive Node (sometimes text is stored in a primitive node)
+    if (node.class_type === "PrimitiveNode" && node.inputs) {
+        // Check widgets_values if they exist (common in primitive nodes)
+        if (node.widgets_values && node.widgets_values.length > 0) {
+             const val = node.widgets_values[0];
+             if (typeof val === 'string') return val;
+        }
+    }
+
+    // 10. General Fallback
+    if (node.inputs) {
+         if (node.inputs.text) {
+             if (Array.isArray(node.inputs.text)) {
+                 return extractTextFromNode(String(node.inputs.text[0]), visited, workflow);
+             } else if (typeof node.inputs.text === 'string') {
+                 return node.inputs.text;
+             }
+         }
+         // Try following conditioning if we haven't found a specific type
+         if (node.inputs.conditioning && Array.isArray(node.inputs.conditioning)) {
+             return extractTextFromNode(String(node.inputs.conditioning[0]), visited, workflow);
+         }
+    }
+
+    return "";
 }
 
 // Main function to get metadata from an image and update the text boxes
