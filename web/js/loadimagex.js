@@ -24,7 +24,13 @@ function logError(message, error) {
 // Helper function to clean potential non-standard JSON from metadata
 function cleanJSONString(jsonString) {
     if (!jsonString) return null;
-    return jsonString.replace(/:\s*NaN/g, ': null');
+    
+    // Replace all NaN occurrences (standalone or in arrays)
+    return jsonString
+        .replace(/:\s*NaN/g, ': null')           // Handles: "key": NaN
+        .replace(/\[\s*NaN\s*\]/g, '[null]')     // Handles: [NaN]
+        .replace(/,\s*NaN\s*,/g, ', null,')      // Handles: [..., NaN, ...]
+        .replace(/,\s*NaN\s*\]/g, ', null]');    // Handles: [..., NaN]
 }
 
 // Self-contained function to parse metadata from a PNG file's raw data.
