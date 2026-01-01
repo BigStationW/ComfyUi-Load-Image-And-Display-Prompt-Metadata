@@ -97,6 +97,21 @@ function extractPromptsFromWorkflow(workflow) {
         }
     }
 
+    // Check if we got the prompts, if not look at OnlyLoadImagesWithMetadata inputs
+    if (!prompts.positive || !prompts.negative) {
+        for (const nodeId in workflow) {
+            const node = workflow[nodeId];
+            if (node.class_type === "OnlyLoadImagesWithMetadata" && node.inputs) {
+                if (!prompts.positive && node.inputs.positive_prompt) {
+                    prompts.positive = node.inputs.positive_prompt;
+                }
+                if (!prompts.negative && node.inputs.negative_prompt) {
+                    prompts.negative = node.inputs.negative_prompt;
+                }
+            }
+        }
+    }
+
     // If we found both via titles, we are done.
     if (prompts.positive && prompts.negative) return prompts;
 
@@ -262,7 +277,13 @@ function extractTextFromNode(nodeId, visited = new Set(), workflow) {
     // 5. Text Multiline (WAS Node Suite)
     if (node.class_type === "Text Multiline" && node.inputs) {
         const textVal = node.inputs.text;
-        if (Array.isArray(textVal)) return extractTextFromNode(String(textVal[0]), visited, workflow);
+        if (Array.isArray(textVal)) {
+            return extractTextFromNode(String(textVal[0]), visited, workflow);
+        }
+        // Check widgets_values if text input is not an array
+        if (node.widgets_values && node.widgets_values.length > 0) {
+            return node.widgets_values[0] || "";
+        }
         return textVal || "";
     }
 
@@ -334,29 +355,54 @@ async function updatePromptsFromImage(filename, node) {
         const buffer = await res.arrayBuffer();
         const metadata = parsePNGMetadata(buffer);
         
-        // Log metadata in blue
         log("%c[LoadImageX] Metadata:", "color: #0066ff; font-weight: bold");
         log("%c" + JSON.stringify(metadata, null, 2), "color: #0066ff");
         
+        let prompts = { positive: "", negative: "" };
+        
+        // FIRST: Try to get NEGATIVE prompt from the prompt execution data
         if (metadata && metadata.prompt) {
             const promptData = JSON.parse(cleanJSONString(metadata.prompt));
-            const prompts = extractPromptsFromWorkflow(promptData);
-
-            // Log positive prompt in green
-            if (prompts.positive) {
-                log("%c[LoadImageX] Positive Prompt:", "color: #00cc00; font-weight: bold");
-                log("%c" + prompts.positive, "color: #00cc00");
-            }
-            
-            // Log negative prompt in red
-            if (prompts.negative) {
-                log("%c[LoadImageX] Negative Prompt:", "color: #ff0000; font-weight: bold");
-                log("%c" + prompts.negative, "color: #ff0000");
-            }
-
-            if (positiveWidget && prompts.positive) positiveWidget.value = prompts.positive;
-            if (negativeWidget && prompts.negative) negativeWidget.value = prompts.negative;
+            prompts = extractPromptsFromWorkflow(promptData);
         }
+        
+        // SECOND: Try to get POSITIVE prompt from the workflow data (Display Any node - more reliable)
+        if (metadata && metadata.workflow) {
+            try {
+                const workflowData = JSON.parse(cleanJSONString(metadata.workflow));
+                if (workflowData && workflowData.nodes) {
+                    // Look for Display Any node with the prompt
+                    for (const workflowNode of workflowData.nodes) {
+                        if (workflowNode.type === "Display Any (rgthree)" && 
+                            workflowNode.widgets_values && 
+                            workflowNode.widgets_values.length > 0) {
+                            const displayText = workflowNode.widgets_values[0];
+                            if (displayText && displayText.length > 100) { // Likely the full prompt
+                                prompts.positive = displayText;
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                logError("[LoadImageX] Error parsing workflow data:", e);
+            }
+        }
+
+        // Log results
+        if (prompts.positive) {
+            log("%c[LoadImageX] Positive Prompt:", "color: #00cc00; font-weight: bold");
+            log("%c" + prompts.positive, "color: #00cc00");
+        }
+        
+        if (prompts.negative) {
+            log("%c[LoadImageX] Negative Prompt:", "color: #ff0000; font-weight: bold");
+            log("%c" + prompts.negative, "color: #ff0000");
+        }
+
+        if (positiveWidget && prompts.positive) positiveWidget.value = prompts.positive;
+        if (negativeWidget && prompts.negative) negativeWidget.value = prompts.negative;
+        
     } catch (error) {
         logError("[LoadImageX] Error processing image metadata:", error);
     }
