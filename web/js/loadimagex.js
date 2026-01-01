@@ -2,7 +2,7 @@ import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
 
 // Configuration option to enable/disable logging
-const ENABLE_LOGGING = false; // Set to true to enable all console logs
+const ENABLE_LOGGING = true; // Set to true to enable all console logs
 
 // Helper function for conditional logging
 function log(message, style = "") {
@@ -97,21 +97,6 @@ function extractPromptsFromWorkflow(workflow) {
         }
     }
 
-    // Check if we got the prompts, if not look at OnlyLoadImagesWithMetadata inputs
-    if (!prompts.positive || !prompts.negative) {
-        for (const nodeId in workflow) {
-            const node = workflow[nodeId];
-            if (node.class_type === "OnlyLoadImagesWithMetadata" && node.inputs) {
-                if (!prompts.positive && node.inputs.positive_prompt) {
-                    prompts.positive = node.inputs.positive_prompt;
-                }
-                if (!prompts.negative && node.inputs.negative_prompt) {
-                    prompts.negative = node.inputs.negative_prompt;
-                }
-            }
-        }
-    }
-
     // If we found both via titles, we are done.
     if (prompts.positive && prompts.negative) return prompts;
 
@@ -119,7 +104,7 @@ function extractPromptsFromWorkflow(workflow) {
     const INPUT_PATTERNS = {
         // Added 'guider' for SamplerCustomAdvanced/Flux workflows
         positive: ['positive', 'conditioning_positive', 'pos', 'guider'], 
-        negative: ['nag_negative', 'negative', 'conditioning_negative', 'neg']
+        negative: ['negative', 'conditioning_negative', 'neg']
     };
 
     try {
@@ -181,7 +166,7 @@ function extractPromptsFromWorkflow(workflow) {
                 const node = workflow[nodeId];
                 if ((node.class_type === "CLIPTextEncode" || node.class_type === "CLIPTextEncodeFlux") && node.inputs && typeof node.inputs.text === 'string') {
                     const title = node._meta?.title?.toLowerCase() || "";
-                    if (title.includes("negative") || title.includes("nag")) {
+                    if (title.includes("negative") || title.includes("neg")) {
                         if (!prompts.negative) prompts.negative = node.inputs.text;
                     } else {
                         if (!prompts.positive && nodeId !== positiveNodeId && nodeId !== negativeNodeId) {
