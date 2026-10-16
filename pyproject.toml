@@ -1,7 +1,7 @@
 [project]
 name = "load-image-and-display-prompt-metadata"
 description = "This node displays the positive and negative prompts of a loaded ComfyUi image."
-version = "1.0.0"
+version = "1.0.1"
 license = {file = "LICENSE"} 
 # classifiers = [
 #     # For OS-independent nodes (works on all operating systems)
