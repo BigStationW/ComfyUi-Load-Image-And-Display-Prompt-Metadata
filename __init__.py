@@ -264,6 +264,25 @@ class OnlyLoadImagesWithMetadata:
                         
         elif node_type == 'String Literal' and 'string' in inputs:
             return str(inputs['string'])
+        elif node_type in ('PrimitiveString', 'PrimitiveStringMultiline') and 'value' in inputs:
+            value = inputs['value']
+            if isinstance(value, list) and value:
+                return cls._extract_text_from_node(str(value[0]), workflow, visited)
+            elif isinstance(value, str):
+                return value
+        elif node_type in ('StringConcatenate', 'Text Concatenate'):
+            parts = []
+            for key in ('string_a', 'string_b', 'text_a', 'text_b', 'text_c', 'text_d'):
+                if key in inputs:
+                    value = inputs[key]
+                    if isinstance(value, list) and value:
+                        part = cls._extract_text_from_node(str(value[0]), workflow, set(visited))
+                    else:
+                        part = value if isinstance(value, str) else ""
+                    if part:
+                        parts.append(part)
+            delimiter = inputs.get('delimiter', '')
+            return (delimiter if isinstance(delimiter, str) else '').join(parts)
             
         return ""
 
